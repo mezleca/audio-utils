@@ -1,0 +1,49 @@
+{
+    "name": "@rel-packages/audio-utils",
+    "version": "0.0.1",
+    "description": "audio utils (libsndfile)",
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "homepage": "https://github.com/mezleca/audio-utils",
+    "scripts": {
+        "update:patch": "npm version patch && git push --follow-tags",
+        "update:minor": "npm version minor && git push --follow-tags",
+        "update:major": "npm version major && git push --follow-tags",
+        "prepublishOnly": "npm run compile:tsc && mkdir -p lib",
+        "compile:native": "bun scripts/build.ts native",
+        "compile:tsc": "tsc",
+        "format": "prettier --write . --ignore-unknown",
+        "pretest": "bun run format",
+        "test": "bun test",
+        "prebuild": "bun run format",
+        "build": "bun scripts/build.ts native && npm run compile:tsc",
+        "build:clean": "bun run scripts/build.ts native clean && npm run compile:tsc",
+        "ci:build": "bun scripts/build.ts ci",
+        "example": "bun run scripts/example.ts"
+    },
+    "author": "rel",
+    "license": "ISC",
+    "repository": {
+        "url": "https://github.com/mezleca/audio-utils.git"
+    },
+    "type": "commonjs",
+    "files": [
+        "dist/",
+        "prebuilds/",
+        "README.md"
+    ],
+    "devDependencies": {
+        "@types/bindings": "^1.5.5",
+        "@types/node": "^24.10.4",
+        "@types/bun": "latest",
+        "cmake-js": "^7.4.0",
+        "node-addon-api": "^8.5.0",
+        "prettier": "^3.6.2",
+        "prettier-plugin-svelte": "^3.4.1",
+        "tsx": "^4.21.0",
+        "typescript": "^5.9.3"
+    },
+    "dependencies": {
+        "node-gyp-build": "^4.8.4"
+    }
+}

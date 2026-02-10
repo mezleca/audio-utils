@@ -1,0 +1,7 @@
+node_modules
+dist
+build
+prebuilds
+vendor
+lib
+compile_commands.json

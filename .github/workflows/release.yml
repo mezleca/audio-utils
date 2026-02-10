@@ -1,0 +1,229 @@
+name: release
+on:
+    push:
+        tags:
+            - "v*"
+    workflow_dispatch:
+        inputs:
+            mode:
+                description: "build_only runs prebuilds without release/publish"
+                required: true
+                default: "build_only"
+                type: choice
+                options:
+                    - build_only
+                    - release
+
+jobs:
+    prebuild-native:
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - os: windows-latest
+                      platform: win32-x64
+                    - os: ubuntu-latest
+                      platform: linux-x64
+        runs-on: ${{ matrix.os }}
+        steps:
+            - name: checkout
+              uses: actions/checkout@v4
+
+            - name: install system dependencies (ubuntu)
+              if: runner.os == 'Linux'
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y build-essential cmake ninja-build
+
+            - name: install system dependencies (windows)
+              if: runner.os == 'Windows'
+              run: choco install ninja
+
+            - name: setup MSVC environment
+              if: runner.os == 'Windows'
+              uses: ilammy/msvc-dev-cmd@v1
+
+            - name: cache vcpkg (windows)
+              if: runner.os == 'Windows'
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      C:/vcpkg/installed
+                      C:/vcpkg/packages
+                      C:/vcpkg/buildtrees
+                  key: ${{ runner.os }}-vcpkg-${{ hashFiles('**/CMakeLists.txt') }}-libsndfile
+                  restore-keys: |
+                      ${{ runner.os }}-vcpkg-
+
+            - name: setup vcpkg (windows)
+              if: runner.os == 'Windows'
+              shell: pwsh
+              run: |
+                  $vcpkg_root = "C:\vcpkg"
+                  if (-Not (Test-Path (Join-Path $vcpkg_root "vcpkg.exe"))) {
+                      if (Test-Path $vcpkg_root) {
+                          Remove-Item -Recurse -Force $vcpkg_root
+                      }
+                      git clone https://github.com/microsoft/vcpkg $vcpkg_root
+                      & "$vcpkg_root\bootstrap-vcpkg.bat"
+                  }
+
+                  & "$vcpkg_root\vcpkg.exe" install libsndfile[core,mpeg,external-libs]:x64-windows-static
+
+                  "VCPKG_ROOT=$vcpkg_root" | Out-File -FilePath $env:GITHUB_ENV -Append
+                  "VCPKG_DEFAULT_TRIPLET=x64-windows-static" | Out-File -FilePath $env:GITHUB_ENV -Append
+                  "VCPKG_TARGET_TRIPLET=x64-windows-static" | Out-File -FilePath $env:GITHUB_ENV -Append
+                  "CMAKE_TOOLCHAIN_FILE=$vcpkg_root\scripts\buildsystems\vcpkg.cmake" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+            - name: setup vcpkg (linux)
+              if: runner.os == 'Linux'
+              shell: bash
+              run: |
+                  vcpkg_root="/home/runner/vcpkg"
+                  if [ ! -x "$vcpkg_root/vcpkg" ]; then
+                      rm -rf "$vcpkg_root"
+                      git clone https://github.com/microsoft/vcpkg "$vcpkg_root"
+                      "$vcpkg_root/bootstrap-vcpkg.sh"
+                  fi
+
+                  "$vcpkg_root/vcpkg" install libsndfile[core,mpeg,external-libs]:x64-linux
+
+                  echo "VCPKG_ROOT=$vcpkg_root" >> "$GITHUB_ENV"
+                  echo "VCPKG_DEFAULT_TRIPLET=x64-linux" >> "$GITHUB_ENV"
+                  echo "VCPKG_TARGET_TRIPLET=x64-linux" >> "$GITHUB_ENV"
+                  echo "CMAKE_TOOLCHAIN_FILE=$vcpkg_root/scripts/buildsystems/vcpkg.cmake" >> "$GITHUB_ENV"
+
+            - name: Install LLVM and Clang
+              uses: KyleMayes/install-llvm-action@v2
+              with:
+                  version: "20.1.0"
+
+            - name: setup Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: "22"
+
+            - name: setup Bun
+              uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: latest
+
+            - name: install dependencies
+              run: bun install
+
+            - name: build native
+              run: bun run compile:native
+
+            - name: run example
+              run: bun run example
+
+            - name: prepare prebuilds
+              shell: bash
+              run: |
+                  mkdir -p prebuilds/${{ matrix.platform }}
+                  cp build/audio-utils.node prebuilds/${{ matrix.platform }}/
+
+            - name: upload prebuild artifacts
+              uses: actions/upload-artifact@v4
+              with:
+                  name: prebuilds-${{ matrix.platform }}
+                  path: prebuilds/${{ matrix.platform }}/
+                  retention-days: 7
+
+    release:
+        needs: [prebuild-native]
+        if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.mode == 'release'
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write
+        steps:
+            - name: checkout
+              uses: actions/checkout@v4
+
+            - name: download native artifacts
+              uses: actions/download-artifact@v4
+              with:
+                  path: artifacts
+
+            - name: prepare release assets
+              run: |
+                  mkdir -p release-assets
+
+                  # native prebuilds
+                  if [ -d "artifacts/prebuilds-win32-x64" ]; then
+                      cp artifacts/prebuilds-win32-x64/audio-utils.node release-assets/audio-utils-win32-x64.node
+                  fi
+
+                  if [ -d "artifacts/prebuilds-linux-x64" ]; then
+                      cp artifacts/prebuilds-linux-x64/audio-utils.node release-assets/audio-utils-linux-x64.node
+                  fi
+
+                  ls -la release-assets/
+
+            - name: create github release
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  TAG_NAME=${GITHUB_REF#refs/tags/}
+
+                  # create release with assets
+                  gh release create "$TAG_NAME" \
+                    --repo="$GITHUB_REPOSITORY" \
+                    --title="$TAG_NAME" \
+                    --generate-notes \
+                    release-assets/*
+
+    publish:
+        needs: [prebuild-native]
+        if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.mode == 'release'
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            id-token: write
+        steps:
+            - name: checkout
+              uses: actions/checkout@v4
+
+            - name: setup Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: "22"
+                  registry-url: "https://registry.npmjs.org"
+
+            - name: setup Bun
+              uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: latest
+
+            - name: install dependencies
+              run: bun install --ignore-scripts
+
+            - name: download prebuilds
+              uses: actions/download-artifact@v4
+              with:
+                  path: prebuilds-tmp
+
+            - name: organize prebuilds
+              run: |
+                  mkdir -p prebuilds/win32-x64 prebuilds/linux-x64
+
+                  # copy native prebuilds only
+                  if [ -d "prebuilds-tmp/prebuilds-win32-x64" ]; then
+                      cp prebuilds-tmp/prebuilds-win32-x64/* prebuilds/win32-x64/
+                  fi
+
+                  if [ -d "prebuilds-tmp/prebuilds-linux-x64" ]; then
+                      cp prebuilds-tmp/prebuilds-linux-x64/* prebuilds/linux-x64/
+                  fi
+
+                  echo "prebuilds structure:"
+                  find prebuilds -type f
+
+            - name: build typescript
+              run: bun run compile:tsc
+
+            - name: publish to npm
+              run: npm publish --provenance --access public
+              env:
+                  NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
