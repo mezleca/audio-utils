@@ -1,6 +1,6 @@
 {
     "name": "@rel-packages/audio-utils",
-    "version": "0.0.1",
+    "version": "0.1.0",
     "description": "audio utils (libsndfile)",
     "main": "dist/index.js",
     "types": "dist/index.d.ts",
